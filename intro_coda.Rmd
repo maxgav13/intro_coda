@@ -611,36 +611,6 @@ aar2 %>%
   set_caption('Transformación *ilr* para los datos del macizo Aar, con subconjuntos por defecto.')
 ```
 
-```{r balances, include=FALSE}
-aar.balances = matrix(c(1,0,-1,0,0,0,0,0,0,0,
-                        0,1,0,0,0,0,0,0,-1,0,
-                        1,-1,1,0,0,0,0,0,-1,0,
-                        0,0,0,0,0,1,-1,0,0,0,
-                        0,0,0,0,0,1,1,-1,0,0,
-                        0,0,0,1,-1,0,0,0,0,0,
-                        0,0,0,1,1,0,0,0,0,-1,
-                        0,0,0,1,1,-1,-1,-1,0,1,
-                        1,1,1,-1,-1,-1,-1,-1,1,-1),
-                      nrow = 9,
-                      byrow = T,
-                      dimnames = list(Balances=str_c('b',1:9),
-                                      Partes=names(aar2))) %>% 
-  t()
-
-aar.bal.basis = gsi.buildilrBase(aar.balances)
-
-aar.ilr = ilr(acomp(aar2), V = aar.bal.basis)
-
-# aar.ilr %>% 
-#   corrr::correlate() %>% 
-#   corrr::shave(upper = F) %>% 
-#   corrr::fashion()
-
-# correlation::correlation(aar.ilr %>% as_tibble())
-
-# CoDaDendrogram(acomp(aar2), V = aar.bal.basis, box.space = 10)
-```
-
 
 ## Log-cociente sumado (Summated logratio - SLR)
 
