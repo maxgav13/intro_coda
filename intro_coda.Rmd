@@ -1,0 +1,1379 @@
+---
+title: "Introducción al Análisis de Datos Composicionales: importancia y uso"
+author: "Maximiliano Garnier-Villarreal"
+keywords: ['CoDA', 'Datos cerrados', 'R', 'Datos composicionales', 'Geología', 'Geoquímica', 'Hidrogeoquímica']
+abstract: |
+  En geociencias es común trabajar con datos que se presentan como partes de un todo (%, ppm, ppb, mg/kg, etc.), ya sea que sumen o no a un valor específico (1, 100%, 1e6, etc.). Estos datos se conocen como *datos composicionales*, y dada su naturaleza específica (restringidos a un espacio cerrado, problema de cierre) requieren de un tratamiento especial para poder utilizar técnicas estadísticas convencionales, ya que aplicar éstas sobre los datos crudos arroja resultados engañosos/erróneos. Ha sido relativamente reciente (1980s en adelante) el desarrollo y aplicación de lo que se conoce como Análisis de Datos Composicionales (CoDA en inglés), donde se presentan herramientas para solventar el problema del espacio cerrado. Este análisis todavía no ha sido muy acogido o utilizado en la comunidad geocientífica (a excepción de grupos esecíficos), ya sea por falta de conocimiento u oposición, pero es necesario conocerlo y saber cómo aplicarlo para poder obtener conclusiones representativas si se desean analizar este tipo de datos desde una perspectiva estadística. Este trabajo pretende introducir los conceptos e ideas fundamentales del análsis de datos composicionales, aplicándolos a datos de basaltos de los Complejos de Tortugal y de Nicoya, Costa Rica.
+  In geoscience is common to deal with data that is presented as parts of a whole (%, ppm, ppb, mg/kg, etc.), and they can or not sum up to a specific value (1, 100%, 1e6, etc.). This type of data are known as *compositional data*, and given their nature (restricted to a closed or limited space, closure problema) they need to be dealt in specific ways to be able to use standard statistical techniques, since applying these to the raw data will yield misleading/erroneous results. What is known as Compositional Data Analysis (CoDA), which offers the necessary tools and techniques to deal with the closed space issue, has been developed and applied just recently (since the 1980s). This analysis has not been welcomed or utilized much by the geoscientific community (with the exception of specific groups), maybe for lack of knowledge about ti or resistance, but it is necessary to know about it and how to apply it to be able to draw meaningful conclusions from a statistical perspective. This work aims to introduce the basic concepts and ideas of compositional data analysis, applying it to data of basalts from the Tortugal and Nicoya Complexes, Costa Rica.
+# date: "`r format(Sys.Date(), '%d %B %Y')`"
+lang: es
+bibliography: ["bib/all.bib"]
+# biblio-style: apalike2
+csl: csl/apa6.csl
+css: css/style.css
+link-citations: true
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    theme: cosmo
+    number_sections: true
+    keep_md: true
+    # dev: "pdf"
+  bookdown::word_document2:
+    reference_docx: 'template_RGAC.docx'
+    # df_print: kable
+    number_sections: false
+    toc: false
+    toc_depth: 2
+  bookdown::pdf_document2:
+    df_print: kable
+    number_sections: false
+    toc: false
+    includes:
+      in_header: header.tex
+  distill::distill_article:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    df_print: kable
+  papaja::apa6_word: default
+always_allow_html: true
+---
+
+```{r setup, include=FALSE, message=FALSE}
+library(here)
+library(knitr)
+library(summarytools)
+library(rnaturalearth)
+library(GMisc)
+library(compositions)
+library(easyCODA)
+library(robCompositions)
+library(zCompositions)
+library(mvoutlier)
+library(factoextra)
+library(viridis)
+library(DescTools)
+library(RColorBrewer)
+library(ggrepel)
+library(MOTE)
+library(papaja)
+library(kableExtra)
+library(gtsummary)
+library(gt)
+library(flextable)
+library(vroom)
+library(patchwork)
+library(janitor)
+# library(conflicted)
+library(tidymodels)
+library(tidyverse)
+
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE,
+  fig.path = "figures/",
+  fig.retina = 3,
+  fig.width = 8,
+  fig.asp = 0.618,
+  fig.align = "center",
+  out.width = "80%"
+)
+
+knitr::knit_hooks$set(inline = function(x) {
+  prettyNum(x, big.mark=".",decimal.mark = ',')
+})
+
+set_flextable_defaults(big.mark = '.',
+                       decimal.mark = ',')
+
+p_val_format <- function(x){
+  # z <- scales::pvalue_format(decimal.mark = ',')(x)
+  z <- printp(x,add_equals = T)
+  z[!is.finite(x)] <- ""
+  z
+}
+
+theme_set(theme_minimal(base_size = 12))
+# conflict_prefer('select','dplyr')
+# conflict_prefer('filter','dplyr')
+
+options(OutDec = ',')
+
+# fmt <- rmarkdown::default_output_format(knitr::current_input())$name
+
+```
+
+```{r data-load, include=FALSE, message=FALSE, cache=TRUE}
+data("chorizon")
+data("Aar")
+data("ArcticLake")
+data("SkyeAFM")
+data("Hydrochem")
+
+kola = chorizon %>% 
+  select(-contains('_')) %>% 
+  as_tibble()
+kola2 = kola %>% select(SiO2,TiO2,Al2O3,MnO,MgO,CaO,Na2O,K2O,P2O5,Fe2O3)
+
+aar = Aar 
+aar2 = aar %>% 
+  select(SiO2:Fe2O3t)
+lake = ArcticLake %>% 
+  as_tibble()
+skye = SkyeAFM %>% 
+  as_tibble()
+hydro = Hydrochem %>% 
+  select(Site,H:HCO3) %>% 
+  as_tibble()
+
+andesite = read_csv('data/andesita.csv') %>% 
+  drop_na(SIO2_WT) %>% 
+  mutate(across(where(is.logical),as.double)) %>% 
+  rowwise() %>%
+  mutate(FEOT_WT = ifelse(is.na(FEOT_WT), 
+                          sum(c(FE2O3_WT,FEO_WT),na.rm=T),
+                          FEOT_WT)) %>%
+  ungroup() %>%
+  select(-FE2O3_WT,-FEO_WT) %>% 
+  mutate(across(contains('WT'),
+                ~ifelse(. == 0, NA, .)))
+
+andesite2 = andesite %>% 
+  select(contains('WT')) %>% 
+  rename_with(~str_remove(.,'_WT'))
+
+basalt = read_csv('data/basalto.csv') %>% 
+  drop_na(SIO2_WT) %>% 
+  mutate(across(where(is.logical),as.double)) %>% 
+  rowwise() %>%
+  mutate(FEOT_WT = ifelse(is.na(FEOT_WT), 
+                          sum(c(FE2O3_WT,FEO_WT),na.rm=T),
+                          FEOT_WT)) %>%
+  ungroup() %>%
+  select(-FE2O3_WT,-FEO_WT) %>% 
+  mutate(across(contains('WT'),
+                ~ifelse(. == 0, NA, .)))
+
+basalt2 = basalt %>% 
+  select(contains('WT')) %>% 
+  rename_with(~str_remove(.,'_WT'))
+
+cocos_island = read_csv('data/isla_coco.csv') %>% 
+  drop_na(SIO2_WT) %>% 
+  mutate(across(where(is.logical),as.double)) %>% 
+  rowwise() %>%
+  mutate(FEOT_WT = ifelse(is.na(FEOT_WT), 
+                          sum(c(FE2O3_WT,FEO_WT),na.rm=T),
+                          FEOT_WT)) %>%
+  ungroup() %>%
+  select(-FE2O3_WT,-FEO_WT) %>% 
+  mutate(across(contains('WT'),
+                ~ifelse(. == 0, NA, .)))
+
+cocos_island2 = cocos_island %>% 
+  select(contains('WT')) %>% 
+  rename_with(~str_remove(.,'_WT'))
+
+cocos_ridge = read_csv('data/dorsal_coco.csv') %>% 
+  drop_na(SIO2_WT) %>% 
+  mutate(across(where(is.logical),as.double)) %>% 
+  rowwise() %>%
+  mutate(FEOT_WT = ifelse(is.na(FEOT_WT), 
+                          sum(c(FE2O3_WT,FEO_WT),na.rm=T),
+                          FEOT_WT)) %>%
+  ungroup() %>%
+  select(-FE2O3_WT,-FEO_WT) %>% 
+  mutate(across(contains('WT'),
+                ~ifelse(. == 0, NA, .)))
+
+cocos_ridge2 = cocos_ridge %>% 
+  select(contains('WT')) %>% 
+  rename_with(~str_remove(.,'_WT'))
+
+galapagos_island = read_csv('data/isla_galapagos.csv') %>% 
+  drop_na(SIO2_WT) %>% 
+  mutate(across(where(is.logical),as.double)) %>% 
+  rowwise() %>%
+  mutate(FEOT_WT = ifelse(is.na(FEOT_WT), 
+                          sum(c(FE2O3_WT,FEO_WT),na.rm=T),
+                          FEOT_WT)) %>%
+  ungroup() %>%
+  select(-FE2O3_WT,-FEO_WT) %>% 
+  mutate(across(contains('WT'),
+                ~ifelse(. == 0, NA, .)))
+
+galapagos_island2 = galapagos_island %>% 
+  select(contains('WT')) %>% 
+  rename_with(~str_remove(.,'_WT'))
+
+galapagos_ridge = read_csv('data/dorsal_galapagos.csv') %>% 
+  drop_na(SIO2_WT) %>% 
+  mutate(across(where(is.logical),as.double)) %>% 
+  rowwise() %>%
+  mutate(FEOT_WT = ifelse(is.na(FEOT_WT), 
+                          sum(c(FE2O3_WT,FEO_WT),na.rm=T),
+                          FEOT_WT)) %>%
+  ungroup() %>%
+  select(-FE2O3_WT,-FEO_WT) %>% 
+  mutate(across(contains('WT'),
+                ~ifelse(. == 0, NA, .)))
+
+galapagos_ridge2 = galapagos_ridge %>% 
+  select(contains('WT')) %>% 
+  rename_with(~str_remove(.,'_WT'))
+
+CR = read_csv('data/CR.csv') %>% 
+  drop_na(SIO2_WT) %>% 
+  filter(SIO2_WT > 0) %>% 
+  mutate(across(where(is.logical),as.double)) %>% 
+  filter(!str_detect(LOCATION,'SEAMOUNT')) %>% 
+  separate(LOCATION, c(NA,NA,NA,'LOCATION',NA), sep = ' / ') %>% 
+  drop_na(LOCATION) %>% 
+  rowwise() %>%
+  mutate(FEOT_WT = ifelse(is.na(FEOT_WT), 
+                          sum(c(FE2O3_WT,FEO_WT),na.rm=T),
+                          FEOT_WT)) %>%
+  ungroup() %>%
+  select(-FE2O3_WT,-FEO_WT) %>% 
+  mutate(across(contains('WT'),
+                ~ifelse(. == 0, NA, .)))
+
+CR2 = CR %>% 
+  select(contains('WT')) %>% 
+  rename_with(~str_remove(.,'_WT'))
+
+nicoya = CR %>% 
+  filter(LOCATION == 'NICOYA COMPLEX', ROCK_NAME == 'BASALT')
+nicoya2 = nicoya %>% 
+  select(contains('WT')) %>% 
+  rename_with(~str_remove(.,'_WT'))
+tortugal = CR %>% 
+  filter(LOCATION == 'TORTUGAL COMPLEX', ROCK_NAME == 'BASALT')
+tortugal2 = tortugal %>% 
+  select(contains('WT')) %>% 
+  rename_with(~str_remove(.,'_WT'))
+
+CAVA = read_csv('data/arco_volcanico_centro_america.csv') %>% 
+  drop_na(SIO2_WT) %>% 
+  mutate(across(where(is.logical),as.double)) %>% 
+  separate(LOCATION, c(NA,NA,'COUNTRY','LOC1','LOC2'), sep = ' / ') %>% 
+  drop_na(COUNTRY) %>% 
+  mutate(LONGITUDE = ifelse(LONGITUDE > 0, -LONGITUDE, LONGITUDE)) %>% 
+  filter(str_detect(COUNTRY,'GUATEMALA-MEXICO',T)) %>% 
+  rowwise() %>%
+  mutate(FEOT_WT = ifelse(is.na(FEOT_WT), 
+                          sum(c(FE2O3_WT,FEO_WT),na.rm=T),
+                          FEOT_WT)) %>%
+  ungroup() %>%
+  select(-FE2O3_WT,-FEO_WT) %>% 
+  mutate(across(contains('WT'),
+                ~ifelse(. == 0, NA, .)))
+
+CAVA2 = CAVA %>% 
+  select(contains('WT')) %>% 
+  rename_with(~str_remove(.,'_WT'))
+
+# cocos_island %>%
+#   rowwise() %>%
+#   select(contains('WT')) %>%
+#   mutate(FEOT_WT = sum(c(FE2O3_WT,FEO_WT,na.rm=T))) %>%
+#   ungroup() %>%
+#   select(-FE2O3_WT,-FEO_WT) %>%
+  # mutate(across(contains('WT'),
+  #               ~ifelse(is.na(.) | .== 0, .001, .))) %>%
+#   drop_na(contains('WT'))
+
+central_america_sf = ne_countries(country = c('costa rica','panama',
+                                              'nicaragua','el salvador',
+                                              'honduras','guatemala'),
+                                  scale = 'medium',
+                                  returnclass = 'sf')
+```
+
+# Introducción
+
+En las ciencias geológicas y de la tierra se trabajan con diversos tipos de datos especiales: datos espaciales, datos direccionales, y datos cerrados [@swan1995]. El presente trabajo se enfoca en estos últimos, en lo que los hacen especiales, cuáles han sido los problemas de tratar con este tipo de datos, y cómo se deben trabajar especialmente desde un punto de vista estadístico.
+
+Datos cerrados son un caso particular de lo que generalmente se denominan datos composicionales. Datos composicionales son datos positivos que guardan información relativa y sus componentes (partes) son parte de un todo, un total, el cual por lo general corresponde con 100%, 1 (proporciones), partes por millón (ppm), mg/l, mg/kg, donde típicamente este total no es de importancia, y el interés es más en la relación entre las partes (${x_i}/{x_j}$) [@vandenboogaart2013; @greenacre2019a; @aitchison1986; @filzmoser2018; @pawlowsky-glahn2011; @pawlowsky-glahn2015]. Datos composicionales se pueden representar como un vector con $D$ partes y que puede cerrar a un valor total $k$ (Ecuación \@ref(eq:partes)).
+
+
+\begin{equation}
+  S^D = {(x_1, x_2, \cdots, x_D): x_1>0, x_2>0, \cdots, x_D>0; x_1 + x_2+, \cdots, + x_D=k}
+  (\#eq:partes)
+\end{equation}
+
+
+En geología datos composicionales se encuentran de forma importante en geoquímica (óxidos mayores, elementos menores), petrografía (componentes de rocas), hidrogeoquímica (iones, cationes, etc.), análisis de sedimentos (arenas, limos, arcillas), de ahí la importancia de conocer cómo trabajar con este tipo de datos de una forma apropiada.
+
+El problema con este tipo de datos, es que como suman a un total ($k$, Ecuación \@ref(eq:partes)), el espacio en donde habitan los datos se encuentra restringido (0-1, 0-100%) y las técnicas estadísticas no son válidas, ya que éstas operan en el espacio $-\infty,\infty$. Estos problemas, especialmente las correlaciones espurias, han sido de conocimiento desde los trabajos de @pearson1897prsl, @chayes1960jgr, @chayes1962tjog, pero una solución o forma apropiada de trabajar con estos datos no fue introducida hasta los trabajos de @aitchison1982jrsssbm, @aitchison1984mg, @aitchison1986. Este trabajo hace un esfuerzo en resumir lo básico de lo establecido por estos trabajos seminales y trabajos posteriores que se han basado y ampliado lo desarrollado por Aitchison.
+
+La metodología de análisis de datos composicionales es reciente, como se mencionó anteriormente, y realmente no ha tenido mucha acogida aplicados a temas en geociencias hasta años recientes. Lo anterior se ve reflejado en artículos que hacen uso de este análisis en geociencias, donde hay trabajos principalmente por Aitchison a principios de los años 2000 [@thomas2003pcdaw; @buccianti2005mg; @thomas2005mg]. En la última década se han dedicado volúmenes especiales de revistas internacionales a estudios que hacen uso de estos análisis (Journal of Geochemical Exploration, 2014, Vol. 141; Applied Geochemistry, 2016, Vol. 75), y más recientemente en un estudio multidisciplinario de @montsion2019aes. Esto hace ver que aun hace falta impulsar el uso de esta metodología en las geociencias.
+
+Para demostrar la teoría presentada se va a usar el software estadístico libre multiplataforma **R** [@R-base], así como una serie de paquetes específicamente desarrollados para análisis de datos composicionales [@R-compositions; @R-easyCODA; @R-zCompositions; @R-robCompositions], y diversos juegos de datos.
+
+# Principios de análisis de datos composicionales
+
+@aitchison1986 propuso ciertos principios que se deben respetar durante cualquier análisis de datos composicionales para que los resultados obtenidos se puedan considerar representativos y satisfactorios. 
+
+## Invariancia escalar
+
+Este principio se basa en que la relación entre componentes va a ser la misma sin importar la escala de los datos y el valor del total de la suma de los componentes. Por ejemplo los siguientes vectores representan la misma composición, independiente de las unidades: $a=[15,3,9], \ b=[300,60,180], \ c=[5,1,3]$, donde varían únicamente por los factores $w=20$ y $w=1/3$ para a-b y a-c respectivamente.
+
+## Coherencia subcomposicional
+
+Este principio establece que el analizar una parte de la composición "completa", que ha sido re-cerrada, debe arrojar los mimos resultados que al analizar la composición "completa". Esto es de vital importancia ya que @aitchison1986 hace alusión a que realmente nunca se tiene la composición completa ya que siempre va haber alguna parte o componente que no se mide por lo que en realidad siempre estamos trabajando con subcomposiciones. Se puede pensar como el análogo en estadística clásica de que una muestra nunca va a capturar la totalidad la población de interés, en el caso de datos composicionales refiriéndose a la totalidad de los componentes.
+
+## Invariancia por permutación
+
+Este hace referencia a que el orden de los componentes no debe afectar el análisis de los datos, las partes pueden ordenarse de cualquier manera que el resultado tiene que ser el mismo.
+
+Para demostrar el problema con las correlaciones elucidado por @pearson1897prsl, @chayes1960jgr, y el incumplimiento del principio de coherencia subcomposicional al trabajar con los datos crudos y una subcomposición, se van a usar los datos geoquímicos de sedimentos glaciáricos del macizo Aar presentes en el paquete **compositions** [@R-compositions].
+
+La Figura \@ref(fig:cor-espuria) muestra un ejemplo de calcular el coeficiente de correlación de Pearson para los mismos componentes (partes) para la composición "completa" (**A**) y una subcomposición (**B**). Se ve el efecto de las relaciones espurias (falsas, engañosas) y el incumplimiento de coherencia subcomposicional, los cuales son perjudiciales para obtener resultados y conclusiones significativas.
+
+```{r}
+aar.sub = aar %>% 
+  select(TiO2,MnO,MgO,Fe2O3t) %>% 
+  clo(total = 100) %>% 
+  as_tibble()
+```
+
+(ref:cor-espuria) **A** Correlación entre MgO y TiO2 para la composición "completa" del macizo Aar. Se observa una relación positiva y con un valor de $r=`r apa(with(aar,cor(MgO,TiO2)),3,F)`$, **B** Correlación entre MgO y TiO2 para la subcomposición TiO2, MnO, MgO, Fe2O3t. Se observa como cambia la relación a negativa y con un valor de $r=`r apa(with(aar.sub,cor(MgO,TiO2)),3,F)`$.
+
+```{r cor-espuria, fig.cap='(ref:cor-espuria)'}
+gg.espuria1 = aar %>% 
+  ggplot(aes(MgO,TiO2)) + 
+  geom_point(size=2, shape=21, col='blue')
+gg.espuria2 = aar.sub %>% 
+  ggplot(aes(MgO,TiO2)) + 
+  geom_point(size=2, shape=21, col='blue')
+
+gg.espuria = gg.espuria1 + gg.espuria2 + 
+  plot_annotation(tag_levels = 'A')
+gg.espuria
+```
+
+# Transformaciones log-cocientes
+
+@aitchison1982jrsssbm, @aitchison1984mg, y más formalmente @aitchison1986 introduce el concepto de log-cocientes ($log(x_i/x_j)=-log(x_j/x_i)$), los cuales no son solo más estables matemáticamente sino que también van a cumplir con los principios de análisis composicional, y reflejan la naturaleza de estos datos donde el interés está en la relación entre partes.
+
+Dentro de las ventajas de la transformación log-cociente están que abre los datos al pasar de un espacio restringido (0-1, 0-100) a uno abierto ($-\infty,\infty$), lo que permite utilizar técnicas de análisis multivariable, y es coherente subcomposicionalmente. El número total de pares va a estar dado por la Ecuación \@ref(eq:pares-log), donde $D$ es el número de componentes (partes).
+
+
+\begin{equation}
+  pares = \frac{D(D-1)}{2}
+  (\#eq:pares-log)
+\end{equation}
+
+
+Utilizando esta transformación y realizando una relación entre las partes $TiO_2/Fe_2O_3t$ y $MnO/MgO$ de los datos de Aar, se obtiene el mismo resultado a si se utiliza la composición "completa" o una subcomposición (Figura \@ref(fig:cor-log)), mostrando la fortaleza y consistencia de este método al trabajar con datos composicionales.
+
+(ref:cor-log) **A** Correlación entre $log(TiO_2/Fe_2O_3t)$ y $log(MnO/MgO)$ para la composición "completa" del macizo Aar. Se observa una relación positiva y con un valor de $r=`r apa(with(aar,cor(log(MnO/MgO),log(TiO2/Fe2O3t))),3,F)`$, **B** Correlación entre $log(TiO_2/Fe_2O_3t)$ y $log(MnO/MgO)$ para la subcomposición $TiO_2$, $MnO$, $MgO$, $Fe_2O_3t$. Se observa la misma relación y valor de correlación.
+
+```{r cor-log, fig.cap='(ref:cor-log)'}
+gg.log1 = aar %>% 
+  ggplot(aes(log(MnO/MgO),log(TiO2/Fe2O3t))) + 
+  geom_point(size=2, shape=21, col='blue')
+gg.log2 = aar.sub %>% 
+  ggplot(aes(log(MnO/MgO),log(TiO2/Fe2O3t))) + 
+  geom_point(size=2, shape=21, col='blue')
+
+gg.log = gg.log1 + gg.log2 + 
+  plot_annotation(tag_levels = 'A')
+gg.log
+```
+
+Dada la Ecuación \@ref(eq:pares-log) es claro que conforme más partes se tengan mayor el número de log-cocientes que se tienen. Es por esto que se han definido varios log-cocientes especiales, que van a resultar en $D$ o $D-1$ log-cocientes representativos de la composición general [@aitchison1986; @pawlowsky-glahn2011; @pawlowsky-glahn2015; @egozcue2003mg; @greenacre2020acag].
+
+## Log-cociente aditivo (Additive logratio - ALR)
+
+@aitchison1986 definió este log-cociente a como se muestra en la Ecuación \@ref(eq:alr) y describe a la composición en $D-1$ log-cocientes o coordenadas. En general se calcula usando una de las partes como denominador del resto, donde la selección del denominador puede tener un sentido práctico o ser aleatoria, donde lo típico o por defecto es usar la última parte.
+
+
+\begin{equation}
+  alr(x) = \Big[log \frac{x_1}{x_D}, \cdots , log \frac{x_{D-1}}{x_D}\Big]
+  (\#eq:alr)
+\end{equation}
+
+
+Esta transformación es útil para hipótesis estadísticas y modelos lineales pero presenta los inconvenientes de que es asimétrica (no preserva las distancias y ángulos originales entre las partes) [@pawlowsky-glahn2011; @buccianti2014jge; @egozcue2003mg].
+
+<!-- El Cuadro \@ref(tab:alr-ej) muestra las primera lineas de la transformación *alr* para los datos de Aar, usando $SiO_2$ como el denominador. -->
+
+```{r alr-ej, include=FALSE}
+aar2 %>% 
+  acomp() %>% 
+  alr(ivar = 1) %>% 
+  as_tibble() %>% 
+  head() %>% 
+  flextable() %>% 
+  theme_booktabs() %>% 
+  colformat_double(digits = 2) %>% 
+  mk_par(j = 1, part = "header",
+         value = as_paragraph(as_i('TiO'),as_sub('2'))) %>% 
+  mk_par(j = 2, part = "header",
+         value = as_paragraph(as_i('Al'),as_sub('2'),
+                              as_i('O'),as_sub('3'))) %>% 
+  mk_par(j = 3, part = "header", value = as_paragraph(as_i('MnO'))) %>% 
+  mk_par(j = 4, part = "header", value = as_paragraph(as_i('MgO'))) %>% 
+  mk_par(j = 5, part = "header", value = as_paragraph(as_i('CaO'))) %>% 
+  mk_par(j = 6, part = "header",
+         value = as_paragraph(as_i('Na'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 7, part = "header",
+         value = as_paragraph(as_i('K'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 8, part = "header",
+         value = as_paragraph(as_i('P'),as_sub('2'),
+                              as_i('O'),as_sub('5'))) %>% 
+  mk_par(j = 9, part = "header",
+         value = as_paragraph(as_i('Fe'),as_sub('2'),
+                              as_i('O'),as_sub('3'),as_i('t'))) %>% 
+  align(align = 'center', part = 'all') %>% 
+  bold(part = 'header') %>% 
+  fit_to_width(6.5) %>% 
+  # autofit() %>% 
+  set_caption('Transformación *alr* para los datos del macizo Aar, usando $SiO_2$ como denominador.')
+```
+
+
+## Log-cociente centrado (Centered logratio - CLR)
+
+Para solventar el hecho de la asimetría del *alr*, @aitchison1986 introdujo el log-cociente centrado (Ecuación \@ref(eq:clr)). Este log-cociente describe a la composición en $D$ log-cocientes o coordenadas. Se calcula usando la media geométrica de las observaciones (filas) de la composición ($g_m(x)$).
+
+
+\begin{equation}
+  clr(x) = \Big[log \frac{x_1}{g_m(x)} , \cdots , log \frac{x_{D-1}}{g_m(x)} \Big]
+  (\#eq:clr)
+\end{equation}
+
+donde $g_m(x)=(x_1 x_2 \cdots x_D)^{1/D}$.
+
+Al mantener las distancias y ángulos es útil en técnicas donde estos valores son importantes, como Análisis de Componentes Principales (Principal Component Analysis - PCA en inglés) y análisis de agrupamientos (Cluster analysis), pero no es coherente subcomposicionalmente ya que la media geométrica cambia con la presencia o ausencia de las partes, y además la matriz de covarianza es singular [@pawlowsky-glahn2011; @buccianti2014jge; @egozcue2003mg; @aitchison2008p3cdaw].
+
+<!-- El Cuadro \@ref(tab:clr-ej) muestra las primera lineas de la transformación *clr* para los datos de Aar. -->
+
+```{r clr-ej, include=FALSE}
+aar2 %>% 
+  acomp() %>% 
+  clr() %>% 
+  as_tibble() %>% 
+  head() %>% 
+  flextable() %>% 
+  theme_booktabs() %>% 
+  colformat_double(digits = 2) %>% 
+  mk_par(j = 1, part = "header",
+         value = as_paragraph(as_i('SiO'),as_sub('2'))) %>% 
+  mk_par(j = 2, part = "header",
+         value = as_paragraph(as_i('TiO'),as_sub('2'))) %>% 
+  mk_par(j = 3, part = "header",
+         value = as_paragraph(as_i('Al'),as_sub('2'),
+                              as_i('O'),as_sub('3'))) %>% 
+  mk_par(j = 4, part = "header", value = as_paragraph(as_i('MnO'))) %>% 
+  mk_par(j = 5, part = "header", value = as_paragraph(as_i('MgO'))) %>% 
+  mk_par(j = 6, part = "header", value = as_paragraph(as_i('CaO'))) %>% 
+  mk_par(j = 7, part = "header",
+         value = as_paragraph(as_i('Na'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 8, part = "header",
+         value = as_paragraph(as_i('K'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 9, part = "header",
+         value = as_paragraph(as_i('P'),as_sub('2'),
+                              as_i('O'),as_sub('5'))) %>% 
+  mk_par(j = 10, part = "header",
+         value = as_paragraph(as_i('Fe'),as_sub('2'),
+                              as_i('O'),as_sub('3'),as_i('t'))) %>% 
+  align(align = 'center', part = 'all') %>% 
+  bold(part = 'header') %>% 
+  fit_to_width(6.5) %>% 
+  # autofit() %>% 
+  set_caption('Transformación *clr* para los datos del macizo Aar.')
+```
+
+## Log-cociente isométrico (Isometric logratio - ILR)
+
+Para trabajar con una transformación que mantiene todas las propiedades necesarias, @egozcue2003mg introdujeron el log-cociente isométrico. Esta transformación describe a la composición en $D-1$ log-cocientes o coordenadas. Existen dos formas principales para definir estas coordenadas: balances o pivotes. Los balances [@egozcue2005mg] se obtienen utilizando lo que se conoce como partición secuencial binaria (Sequential Binary Partition - SBP en inglés), donde de manera automática o definida por el usuario las partes de la composición se agrupan en subconjuntos (Ecuación \@ref(eq:ilr-balances)). Los pivotes [@fiserova2011mg] utilizan de igual manera la SBP pero de una forma escalonada donde en la primer coordenada (pivote) el primer subconjunto es la primer parte ($x_1$) y el segundo subconjunto es el resto de partes ($x_2,\cdots,x_D$), en la segunda coordenada (pivote) el primer subconjunto es la segunda parte ($x_2$) y el segundo subconjunto es el resto de partes ($x_3,\cdots,x_D$), así sucesivamente (Ecuación \@ref(eq:ilr-pivotes)).
+
+
+\begin{equation}
+  b_k = \sqrt{\frac{rs}{r+s}}log \frac{g(x_{r})}{g(x_{s})} 
+  (\#eq:ilr-balances)
+\end{equation}
+
+En la expresión anterior $r$ y $g(x_{r})$ son el número de partes y media geométrica del subconjunto $r$, $s$ y $g(x_{s})$ son el número de partes y media geométrica del subconjunto $s$. Típicamente $r$ se codifica como $+1$ y $s$ como $-1$.
+
+\begin{equation}
+  z_i = \sqrt{\frac{D-i}{D-i+1}}log \frac{x_i}{\sqrt[D-i]{\prod^D_{j=i+1}x_j}}
+  (\#eq:ilr-pivotes)
+\end{equation}
+
+Este log-cociente presente mucho atractivo matemático y teórico pero es tal vez el más difícil de interpretar si no se definen los subconjuntos explícitamente [@vandenboogaart2013; @greenacre2019a]. La construcción de los balances va a depender del área de estudio (naturaleza de los datos, ej: rocas ígneas, rocas sedimentarias, hidrogeoquímica), del problema a estudiar, y de las partes que se tengan [@vandenboogaart2013; @pawlowsky-glahn2015]. Ejemplos de posibles balances y pivotes se muestran en los Cuadros \@ref(tab:balances-hydro) y \@ref(tab:pivotes-hydro), respectivamente, para datos de hidro(geo)química, donde se toman en cuenta únicamente los aniones y cationes. Para los balances el analista tiene completo control sobre qué asignar en cada partición, mientras que para los pivotes lo importante es el orden de las partes. En general los subconjuntos en las particiones se codifican con $+1$ y $-1$ para diferenciar a cuál pertenecen. Estas matrices de partición binaria secuencial se usan para la construcción de las coordenadas (transformación) *ilr*.
+
+```{r balances-hydro}
+hydro.balances = matrix(c(1,1,1,1,-1,-1,-1,
+                          1,1,-1,-1,0,0,0,
+                          1,-1,0,0,0,0,0,
+                          0,0,1,-1,0,0,0,
+                          0,0,0,0,1,1,-1,
+                          0,0,0,0,1,-1,0),
+                        nrow = 6,
+                        byrow = T,
+                        dimnames = list(Balances=str_c('b',1:6),
+                                        Partes=c('Na','K','Ca','Mg',
+                                                 'Cl','SO4','HCO3')))
+
+
+hydro.balances %>% 
+  as_tibble(rownames = 'Balance') %>% 
+  flextable() %>% 
+  theme_booktabs() %>% 
+  mk_par(j = 2, part = "header",
+         value = as_paragraph('Na',as_sup('+'))) %>% 
+  mk_par(j = 3, part = "header",
+         value = as_paragraph('K',as_sup('+'))) %>% 
+  mk_par(j = 4, part = "header",
+         value = as_paragraph('Ca',as_sup('2+'))) %>% 
+  mk_par(j = 5, part = "header",
+         value = as_paragraph('Mg',as_sup('+'))) %>% 
+  mk_par(j = 6, part = "header",
+         value = as_paragraph('Cl',as_sup('-'))) %>% 
+  mk_par(j = 7, part = "header",
+         value = as_paragraph('SO',as_sub('4'),as_sup('2-'))) %>% 
+  mk_par(j = 8, part = "header",
+         value = as_paragraph('HCO',as_sub('3'),as_sup('-'))) %>% 
+  align(align = 'center', part = 'all') %>% 
+  bold(part = 'header') %>% 
+  fit_to_width(6.5) %>% 
+  # autofit() %>% 
+  set_caption('Ejemplo de balances (SBP) para cationes y aniones mayores usados en hidro(geo)química.')
+```
+
+```{r pivotes-hydro}
+hydro.pivotes = matrix(c(1,-1,-1,-1,-1,-1,-1,
+                         0,1,-1,-1,-1,-1,-1,
+                         0,0,1,-1,-1,-1,-1,
+                         0,0,0,1,-1,-1,-1,
+                         0,0,0,0,1,-1,-1,
+                         0,0,0,0,0,1,-1),
+                       nrow = 6,
+                       byrow = T,
+                       dimnames = list(Balances=str_c('z',1:6),
+                                       Partes=c('Na','K','Ca','Mg',
+                                                'Cl','SO4','HCO3')))
+
+hydro.pivotes %>% 
+  as_tibble(rownames = 'Pivote') %>% 
+  flextable() %>% 
+  theme_booktabs() %>% 
+  mk_par(j = 2, part = "header",
+         value = as_paragraph('Na',as_sup('+'))) %>% 
+  mk_par(j = 3, part = "header",
+         value = as_paragraph('K',as_sup('+'))) %>% 
+  mk_par(j = 4, part = "header",
+         value = as_paragraph('Ca',as_sup('2+'))) %>% 
+  mk_par(j = 5, part = "header",
+         value = as_paragraph('Mg',as_sup('+'))) %>% 
+  mk_par(j = 6, part = "header",
+         value = as_paragraph('Cl',as_sup('-'))) %>% 
+  mk_par(j = 7, part = "header",
+         value = as_paragraph('SO',as_sub('4'),as_sup('2-'))) %>% 
+  mk_par(j = 8, part = "header",
+         value = as_paragraph('HCO',as_sub('3'),as_sup('-'))) %>% 
+  align(align = 'center', part = 'all') %>% 
+  bold(part = 'header') %>% 
+  fit_to_width(6.5) %>% 
+  # autofit() %>% 
+  set_caption('Ejemplo de pivotes (SBP escalonada) para cationes y aniones mayores usados en hidro(geo)química.')
+```
+
+
+<!-- El Cuadro \@ref(tab:ilr-ej) muestra las primera lineas de la transformación *ilr* para los datos de Aar, usando los subconjuntos por defecto escogidos por el software. -->
+
+```{r ilr-ej, include=FALSE}
+aar2 %>% 
+  acomp() %>% 
+  ilr() %>% 
+  as_tibble() %>% 
+  head() %>% 
+  flextable() %>% 
+  theme_booktabs() %>% 
+  colformat_double(digits = 2) %>% 
+  align(align = 'center', part = 'all') %>% 
+  bold(part = 'header') %>% 
+  fit_to_width(6.5) %>% 
+  # autofit() %>% 
+  set_caption('Transformación *ilr* para los datos del macizo Aar, con subconjuntos por defecto.')
+```
+
+```{r balances, include=FALSE}
+aar.balances = matrix(c(1,0,-1,0,0,0,0,0,0,0,
+                        0,1,0,0,0,0,0,0,-1,0,
+                        1,-1,1,0,0,0,0,0,-1,0,
+                        0,0,0,0,0,1,-1,0,0,0,
+                        0,0,0,0,0,1,1,-1,0,0,
+                        0,0,0,1,-1,0,0,0,0,0,
+                        0,0,0,1,1,0,0,0,0,-1,
+                        0,0,0,1,1,-1,-1,-1,0,1,
+                        1,1,1,-1,-1,-1,-1,-1,1,-1),
+                      nrow = 9,
+                      byrow = T,
+                      dimnames = list(Balances=str_c('b',1:9),
+                                      Partes=names(aar2))) %>% 
+  t()
+
+aar.bal.basis = gsi.buildilrBase(aar.balances)
+
+aar.ilr = ilr(acomp(aar2), V = aar.bal.basis)
+
+# aar.ilr %>% 
+#   corrr::correlate() %>% 
+#   corrr::shave(upper = F) %>% 
+#   corrr::fashion()
+
+# correlation::correlation(aar.ilr %>% as_tibble())
+
+# CoDaDendrogram(acomp(aar2), V = aar.bal.basis, box.space = 10)
+```
+
+
+## Log-cociente sumado (Summated logratio - SLR)
+
+@greenacre2020acag ha propuesto el uso de amalgamamiento (suma, unión) de partes para la creación de log-cocientes (Ecuación \@ref(eq:slr)), indicando que en muchas ocasiones hay sustento teórico y sentido práctico para crear log-cocientes que involucran diferentes partes agrupadas en subconjuntos. Esta transformación es asimétrica pero coherente subcomposicionalmente.
+
+\begin{equation}
+  slr(x) = \frac{\sum x_{J1}}{\sum x_{J2}}
+  (\#eq:slr)
+\end{equation}
+
+donde $x_{J1} = \text{partes del subconjunto 1}$ y $x_{J2} = \text{partes del subconjunto 2}$, y el subconjunto puede corresponder con una única parte o una suma de partes.
+
+Como ejemplo en geoquímica el autor menciona que se pueden agrupar las partes $MgO + Fe_2O_3t + MnO$ como la fracción máfica, las partes $Na_2O + SiO_2 + Al_2O_3 + K_2O$ como la fracción félsica, y las partes $CaO + P_2O_5$ como carbonato-apatito.
+
+Al incluir amalgamamientos en la construcción de los log-cocientes se pueden crear más de $D$ log-cocientes, por lo que @greenacre2020acag sugiere usar la selección de variables (log-cocientes, balances) propuesta por @greenacre2019mg. Esta selección se basa en mantener los log-cocientes que expliquen la gran mayoría de la variación de la composición original.
+
+## Ceros y datos perdidos
+
+Es típico encontrar, en todas las ciencias, datos con ceros y/o datos perdidos por diversas razones, donde probablemente las más típicas corresponden con error en mediciones, valores muy bajos que se codifican como cero o redondead a cero, y valores por debajo del límite de detección. Como el análisis de datos composicionales se basa en log-cocientes es de mucha más importancia el saber lidiar con estos casos porque sino los cálculos se indefinen y no son de utilidad en el análisis [@greenacre2019a; @vandenboogaart2013]. Además hay diferentes tipos de ceros o datos perdidos, lo que hace aún más difícil saber como lidiar con cada tipo; @vandenboogaart2013, @filzmoser2018 y @pawlowsky-glahn2015 describen los diferentes tipos. @vandenboogaart2013 implementan de manera implicita su detección y como lidiar con ellos en el paquete **compositions** [@R-compositions].
+
+@vandenboogaart2013, @filzmoser2018 y @greenacre2019a presentan capítulos dedicados a explorar y lidiar con este tipo de datos. @martin-fernandez2003mg, @palarea-albaladejo2014joge y @palarea-albaladejo2015cails introducen técnicas para lidiar con estos datos en el contexto específico de datos composicionales y  @palarea-albaladejo2015cails las implementan en el paquete **zCompositions** [@R-zCompositions] para **R**. El paquete **robCompositions** [@R-robCompositions] también presenta opciones para lidiar con estos datos teniendo en cuenta la naturaleza composicional de los mismos.
+
+Los diferentes autores y la literatura en general recomiendan lidiar con estos datos en vez de ignorarlos (al final queda a criterio de quien analiza los datos). Con las técnicas propuestas por @palarea-albaladejo2014joge y @palarea-albaladejo2015cails, y los paquetes **zCompositions** [@R-zCompositions] y **robCompositions** [@R-robCompositions] disponibles en **R**, se cuentan con herramientas suficientes para poder utilizar toda la información disponible.
+
+En general la técnica para lidiar con estos datos es conocida como *imputación* (imputation en inglés), y consiste en reemplazar los ceros (0) y/o datos perdidos (NA) por valores obtenidos mediante diferentes técnicas. Lo más típico que se ha usado por mucho tiempo antes de contar con técnicas apropiadas era agregar una cantidad pequeña a cada cero o valor perdido, pero no es lo más recomendado hoy en día [@vandenboogaart2013; @filzmoser2018].
+
+Dentro de las técnicas disponibles se tiene las que usan la distribución de la variable/parte a imputar, y las que usan la relación presente entre la variable/parte a imputar con el resto de las variables/partes. Los métodos que usan la distribución de la variable se conocen como *reemplazamiento multiplicativo*. Los métodos que usan la relación entre partes son de tres tipos: uno que se basa en la distancia (similitud) entre parte completas y la parte incompleta (*knn*); uno iterativo que se conoce como *maximización de lo esperado* (*expectation-maximization - EM* en inglés) [@R-zCompositions; @R-robCompositions]; otro que se basa en iteración tipo Monte Carlo de la Cadena de Markov (Markov Chain Monte Carlo - MCMC en inglés) se conoce *aumento de datos* (*data augmentation - DA* en inglés) y es la alternativa Bayesiana para los procesos de máxima probabilidad (maximum likelihood) utilizados en el paradigma frecuentista [@palarea-albaladejo2015cails].
+
+La Figura \@ref(fig:perdidos-ej) presenta un gráfico resumen de la información de datos perdidos para datos composicionales de los 10 óxidos mayores para la Isla del Coco, información tomada de la base de datos geoquímica GEOROC (Geochemistry of Rocks of the Oceans and Continents, http://georoc.mpch-mainz.gwdg.de). Esta figura presenta los diferentes patrones que se encontraron en los datos (combinación de parte perdida con el resto), el porcentaje de datos perdidos por parte/componente y el porcentaje de presencia de cada patrón.
+
+(ref:perdidos-ej) Ejemplo de patrón de datos perdidos para datos de la Isla del Coco. Se observa que el $P_2O_5$ es el componente con más datos perdidos (31,58%) y el patrón dominante es el que tiene todos los componentes y representa un 64,91% del total de los datos. Las celdas azules corresponden con datos perdidos para el patrón específico y las celdas blancas presentan el valor de la media geométrica de cada componente para el patrón específico. Las barras superior y al costado cuantifican el porcentaje de datos perdidos por componente, y el porcentaje de presencia de cada patrón, respectivamente, ordenados de mayor a menor. En total estos datos presentan un `r apa(mean(is.na(cocos_island2))*100,2)`% de datos perdidos.
+
+```{r perdidos-ej, fig.cap='(ref:perdidos-ej)'}
+zPatterns(cocos_island2, label = NA,
+          show.means = TRUE,
+          bar.ordered = c(TRUE,TRUE),
+          bar.labels = TRUE,
+          cex.axis = .9,
+          cex.means = .8,
+          axis.labels = c('Componente','ID de Patrón'),
+          suppress.print = T)
+```
+
+
+```{r cache=TRUE}
+set.seed(101)
+
+dlDif = c(rep(0,7),.01,0,0)
+
+# tortugal.MultReplDif = multRepl(tortugal2, label = NA, dl = dlDif)
+tortugal.MultLN = multLN(tortugal2, label = NA, dl = dlDif)
+# tortugal.lrEM = lrEM(tortugal2, label = NA, dl = dlDif, 
+#                      ini.cov = 'multRepl', max.iter = 100)
+tortugal.lrDA = lrDA(tortugal2, label = NA, dl = dlDif)
+# tortugal.lrDAMI = lrDA(tortugal2, label = NA, dl = dlDif, m = 10)
+
+# tortugal.coda = impCoda(tortugal2)$xImp
+# tortugal.knn = impKNNa(tortugal2)$xImp
+```
+
+Para las siguientes secciones se va a trabajar con datos de óxidos mayores de basaltos del Complejo de Nicoya ($N=`r nrow(nicoya)`$) y del Complejo de Tortugal ($N=`r nrow(tortugal)`$) para determinar su similitud/disimilitud, usando el análisis de datos composicionales presentado en este trabajo. La información fue tomada de la base de datos geoquímica GEOROC (Geochemistry of Rocks of the Oceans and Continents, http://georoc.mpch-mainz.gwdg.de). 
+
+Los datos del Complejo de Tortugal presentan un 3,73% de datos perdidos, sus patrones y resumen se presentan en la Figura \@ref(fig:perdidos-tortugal), donde se observan dos patrones: uno donde se tienen todas las partes completas y otro donde el $K_2O$ no se registró en un 37,29% del total de las observaciones. Este patrón muestra claras diferencias con el patrón completo, incluyendo un valor muy bajo para el $P_2O_5$. Para poder usar todas las observaciones se imputaron los valores perdidos usando el método de *reemplazamiento multiplicativo* [@R-zCompositions; @palarea-albaladejo2015cails].
+
+(ref:perdidos-tortugal) Patrones y porcentajes de datos perdidos para los datos de óxidos mayores de basaltos del Complejo de Tortugal. Se observa que el único componente que presenta valores perdidos es $K_2O$.
+
+```{r perdidos-tortugal, fig.cap='(ref:perdidos-tortugal)'}
+tortugal.patrones = zPatterns(tortugal2, label = NA,
+          show.means = TRUE,
+          bar.ordered = c(TRUE,TRUE),
+          bar.labels = TRUE,
+          cex.axis = .9,
+          cex.means = .8,
+          axis.labels = c('Componente','ID de Patrón'),
+          suppress.print = T)
+```
+
+# Estadística 
+
+En esta sección se introducen las medidas apropiadas para describir una composición, así como una técnica para visualizar las relación entre los componentes, y pruebas estadísticas básicas para realizar inferencias sobre datos composicionales, cumpliendo los principios establecidos anteriormente.
+
+## Descriptiva
+
+Un paso básico al trabajar con datos numéricos es obtener estadísticas que resuman estos datos para brindar una idea de los valores más típicos y la variación en los valores. Dada la naturaleza de los datos composicionales, medidas de tendencia central y dispersión típicas (media aritmética, varianza, dispersión, etc.) no aplican, por lo que se han desarrollado medidas específicas para describir a este tipo de datos.
+
+### Media composicional o centro
+
+@aitchison1997taciamg definió lo que se conoce como *centro* o *media composicional* (Ecuación \@ref(eq:centro)) y corresponde con un vector cerrado de medias geométricas de la composición original por columnas (partes).
+
+\begin{equation}
+  \bar{x} = \hat{g} = C[g(x)] = clr^{-1}\bigg( \frac{1}{N} \sum_{n=1}^{N} clr(x) \bigg)
+  (\#eq:centro)
+\end{equation}
+
+donde $g(x) = (x_1 x_2 \cdots x_D)^{1/D}, \text{media geométrica de la composición}$, $C = \text{operación de cierre de los datos (0-1)}$.
+
+El Cuadro \@ref(tab:centro) muestra la *media composicional* para los basaltos de los Complejos de Tortugal y Nicoya.
+
+```{r centro}
+tortugal.acomp = acomp(tortugal.MultLN)
+nicoya.acomp = acomp(nicoya2)
+
+tortugal.centro = tortugal.acomp %>% 
+  mean() %>% 
+  clo(total = 100) %>% 
+  as.table() %>% 
+  as.data.frame() %>% 
+  pivot_wider(names_from = Var1,values_from = Freq)
+
+nicoya.centro = nicoya.acomp %>% 
+  mean() %>% 
+  clo(total = 100) %>% 
+  as.table() %>% 
+  as.data.frame() %>% 
+  pivot_wider(names_from = Var1,values_from = Freq)
+
+complejos.centro = bind_rows(list(Tortugal=tortugal.centro,
+                                  Nicoya=nicoya.centro),
+                             .id = 'Complejo')
+
+complejos.centro %>% 
+  flextable() %>% 
+  theme_booktabs() %>% 
+  colformat_double(digits = 2) %>% 
+  mk_par(j = 2, part = "header",
+         value = as_paragraph(as_i('SiO'),as_sub('2'))) %>% 
+  mk_par(j = 3, part = "header",
+         value = as_paragraph(as_i('TiO'),as_sub('2'))) %>% 
+  mk_par(j = 4, part = "header",
+         value = as_paragraph(as_i('Al'),as_sub('2'),
+                              as_i('O'),as_sub('3'))) %>% 
+  mk_par(j = 5, part = "header", value = as_paragraph(as_i('FeOt'))) %>% 
+  mk_par(j = 6, part = "header", value = as_paragraph(as_i('CaO'))) %>% 
+  mk_par(j = 7, part = "header", value = as_paragraph(as_i('MgO'))) %>% 
+  mk_par(j = 8, part = "header",
+         value = as_paragraph(as_i('MnO'))) %>% 
+  mk_par(j = 9, part = "header",
+         value = as_paragraph(as_i('K'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 10, part = "header",
+         value = as_paragraph(as_i('Na'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 11, part = "header",
+         value = as_paragraph(as_i('P'),as_sub('2'),
+                              as_i('O'),as_sub('5'))) %>% 
+  align(align = 'center', part = 'all') %>% 
+  bold(part = 'header') %>% 
+  fit_to_width(6.5) %>% 
+  # autofit() %>% 
+  set_caption('Media composicional para los basaltos de los Complejos de Tortugal y Nicoya.')
+```
+
+```{r include=FALSE}
+CR %>% 
+  filter(str_detect(LOCATION,'COMPLEX'), ROCK_NAME=='BASALT') %>%
+  select(LOCATION,ends_with('WT')) %>% 
+  split(.$LOCATION) %>% 
+  map(~select(.,-LOCATION)) %>% 
+  map_dfr(~acomp(.) %>% mean() %>% clo(total = 100) %>% round(3),
+          .id = 'Complejo')
+```
+
+### Matriz de variación
+
+@aitchison1986 también definió la *matriz de variación* (Ecuación \@ref(eq:var-matrix)), que describe la variación para cada par de log-cocientes, y corresponde con una matriz simétrica ($\tau_{ij}=\tau_{ji}$).
+
+\begin{equation}
+  T = \tau_{ij} = var\Big( log\frac{x_i}{x_j} \Big)
+  (\#eq:var-matrix)
+\end{equation}
+
+El Cuadro \@ref(tab:var-matrix-complejos) muestra la *matriz de variación* para los basaltos del Complejo de Tortugal (triángulo superior) y Complejo de Nicoya (triángulo inferior). Observando esta matriz se ve que en general los log-cocientes para los basaltos de Tortugal presenta mayor variación que los del de Nicoya.
+
+```{r var-matrix-complejos}
+tortugal.variation = tortugal.acomp %>% 
+  variation.acomp() %>% 
+  as.data.frame()
+
+nicoya.variation = nicoya.acomp %>% 
+  variation.acomp() %>% 
+  as.data.frame()
+
+complejos.var.matrix = tortugal.variation
+
+complejos.var.matrix[lower.tri(complejos.var.matrix)] = nicoya.variation[lower.tri(nicoya.variation)]
+diag(complejos.var.matrix) = NA
+
+complejos.var.matrix %>% 
+  rownames_to_column(" ") %>%
+  flextable() %>% 
+  theme_booktabs() %>% 
+  colformat_double(digits = 2) %>% 
+  mk_par(j = 2, part = "header",
+         value = as_paragraph(as_i('SiO'),as_sub('2'))) %>% 
+  mk_par(j = 3, part = "header",
+         value = as_paragraph(as_i('TiO'),as_sub('2'))) %>% 
+  mk_par(j = 4, part = "header",
+         value = as_paragraph(as_i('Al'),as_sub('2'),
+                              as_i('O'),as_sub('3'))) %>% 
+  mk_par(j = 5, part = "header", value = as_paragraph(as_i('FeOt'))) %>% 
+  mk_par(j = 6, part = "header", value = as_paragraph(as_i('CaO'))) %>% 
+  mk_par(j = 7, part = "header", value = as_paragraph(as_i('MgO'))) %>% 
+  mk_par(j = 8, part = "header",
+         value = as_paragraph(as_i('MnO'))) %>% 
+  mk_par(j = 9, part = "header",
+         value = as_paragraph(as_i('K'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 10, part = "header",
+         value = as_paragraph(as_i('Na'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 11, part = "header",
+         value = as_paragraph(as_i('P'),as_sub('2'),
+                              as_i('O'),as_sub('5'))) %>% 
+  mk_par(i = 1,j=1, value = as_paragraph(as_i('SiO'),as_sub('2'))) %>% 
+  mk_par(i = 2,j=1, value = as_paragraph(as_i('TiO'),as_sub('2'))) %>% 
+  mk_par(i = 3,j=1, value = as_paragraph(as_i('Al'),as_sub('2'),
+                                         as_i('O'),as_sub('3'))) %>% 
+  mk_par(i = 4,j=1, value = as_paragraph(as_i('FeOt'))) %>% 
+  mk_par(i = 5,j=1, value = as_paragraph(as_i('CaO'))) %>% 
+  mk_par(i = 6,j=1, value = as_paragraph(as_i('MgO'))) %>% 
+  mk_par(i = 7,j=1, value = as_paragraph(as_i('MnO'))) %>% 
+  mk_par(i = 8,j=1,value = as_paragraph(as_i('K'),as_sub('2'),
+                                        as_i('O'))) %>% 
+  mk_par(i = 9,j=1, value = as_paragraph(as_i('Na'),as_sub('2'),
+                                         as_i('O'))) %>% 
+  mk_par(i = 10,j=1, value = as_paragraph(as_i('P'),as_sub('2'),
+                                          as_i('O'),as_sub('5'))) %>% 
+  align(align = 'center', part = 'all') %>% 
+  bold(part = 'header') %>% 
+  fit_to_width(6.5) %>% 
+  # autofit() %>% 
+  set_caption('Matriz de variación para los Complejos de Tortugal (triángulo superior) y Nicoya (triángulo inferior).')
+```
+
+Esta matriz se puede usar para interpretar la relación/asociación entre las partes de la composición. @aitchison1986 sugiere que valores de $\tau_{ij} \sim 0$ indican buena proporcionalidad/asociación entre las partes, mientras que valores de $\tau_{ij} >> 0$ indican baja proporcionalidad/asociación entre las partes. @aitchison1997taciamg sugiere la expresión $exp(-\sqrt{\tau_{ij}})$ para transformar las varianzas a una métrica similar al coeficiente de correlación (con rango 0-1), donde valores cercanos a 0 (alta variabilidad) indican baja proporcionalidad/asociación, y valores cercanos a 1 (baja variabilidad) indican buena proporcionalidad/asociación entre las partes. El Cuadro \@ref(tab:proporcionalidad-complejos) muestra la matriz de variación, para ambos complejos, transformada usando la expresión sugerida, donde se observa como valores altos de varianza ($TiO_2/SiO_2$) ahora reflejan valores bajos de proporcionalidad/asociación y viceversa ($TiO_2/Al_2O_3$).
+
+```{r proporcionalidad-complejos}
+
+tortugal.prop = exp(-sqrt(tortugal.variation))
+nicoya.prop = exp(-sqrt(nicoya.variation))
+
+complejos.prop = tortugal.prop
+complejos.prop[lower.tri(complejos.prop)] = nicoya.prop[lower.tri(nicoya.prop)]
+diag(complejos.prop) = NA
+
+complejos.prop %>% 
+  as.data.frame() %>% 
+  # mutate(across(everything(),~apa(.,3,F))) %>%
+  rownames_to_column(" ") %>%
+  flextable() %>% 
+  theme_booktabs() %>% 
+  colformat_double(digits = 2) %>% 
+  mk_par(j = 2, part = "header",
+         value = as_paragraph(as_i('SiO'),as_sub('2'))) %>% 
+  mk_par(j = 3, part = "header",
+         value = as_paragraph(as_i('TiO'),as_sub('2'))) %>% 
+  mk_par(j = 4, part = "header",
+         value = as_paragraph(as_i('Al'),as_sub('2'),
+                              as_i('O'),as_sub('3'))) %>% 
+  mk_par(j = 5, part = "header", value = as_paragraph(as_i('FeOt'))) %>% 
+  mk_par(j = 6, part = "header", value = as_paragraph(as_i('CaO'))) %>% 
+  mk_par(j = 7, part = "header", value = as_paragraph(as_i('MgO'))) %>% 
+  mk_par(j = 8, part = "header",
+         value = as_paragraph(as_i('MnO'))) %>% 
+  mk_par(j = 9, part = "header",
+         value = as_paragraph(as_i('K'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 10, part = "header",
+         value = as_paragraph(as_i('Na'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 11, part = "header",
+         value = as_paragraph(as_i('P'),as_sub('2'),
+                              as_i('O'),as_sub('5'))) %>% 
+  mk_par(i = 1,j=1, value = as_paragraph(as_i('SiO'),as_sub('2'))) %>% 
+  mk_par(i = 2,j=1, value = as_paragraph(as_i('TiO'),as_sub('2'))) %>% 
+  mk_par(i = 3,j=1, value = as_paragraph(as_i('Al'),as_sub('2'),
+                                         as_i('O'),as_sub('3'))) %>% 
+  mk_par(i = 4,j=1, value = as_paragraph(as_i('FeOt'))) %>% 
+  mk_par(i = 5,j=1, value = as_paragraph(as_i('CaO'))) %>% 
+  mk_par(i = 6,j=1, value = as_paragraph(as_i('MgO'))) %>% 
+  mk_par(i = 7,j=1, value = as_paragraph(as_i('MnO'))) %>% 
+  mk_par(i = 8,j=1,value = as_paragraph(as_i('K'),as_sub('2'),
+                                        as_i('O'))) %>% 
+  mk_par(i = 9,j=1, value = as_paragraph(as_i('Na'),as_sub('2'),
+                                         as_i('O'))) %>% 
+  mk_par(i = 10,j=1, value = as_paragraph(as_i('P'),as_sub('2'),
+                                          as_i('O'),as_sub('5'))) %>% 
+  align(align = 'center', part = 'all') %>% 
+  bold(part = 'header') %>% 
+  fit_to_width(6.5) %>% 
+  # autofit() %>% 
+  set_caption('Matriz de proporcionalidad/asociación para los basaltos del Complejo de Tortugal (triángulo superior) y de Nicoya (triángulo inferior).')
+```
+
+### Varianza total
+
+La *varianza total* (Ecuación \@ref(eq:totvar)) describe la dispersión general del conjunto de observaciones de una muestra [@pawlowsky-glahn2001serra]. Para el caso de los basaltos del Complejo de Tortugal este valor es de `r apa(mvar(tortugal.acomp),2)`, y para los basaltos del Complejo de Nicoya es de `r apa(mvar(nicoya.acomp),2)`. Claramente hay una diferencia en la variación de los datos entre los basaltos de ambos complejos, lo cual se observó en las matrices de variación y proporcionalidad presentadas anteriormente.
+
+\begin{equation}
+  totvar(x) = \frac{1}{2D} \sum_{i,j=1}^{D} var\Big( log\frac{x_i}{x_j} \Big) = \sum_{i=1}^{D} var(clr_i(x))
+  (\#eq:totvar)
+\end{equation}
+
+### Arreglo de variación
+
+@aitchison1986 introdujo el concepto de arreglo de variación, donde se combinan la matriz de variación (triángulo superior) y la media de los log-cocientes (triángulo inferior), a como se muestra en el Cuadro \@ref(tab:var-array-tortugal) para los datos de Tortugal y en el Cuadro \@ref(tab:var-array-nicoya) para los datos de Nicoya. En ambos casos se agrega la media composicional y la varianza de cada parte.
+
+```{r var-array-tortugal}
+var.array.tortugal = variation.acomp(tortugal.acomp)
+mean.matrix.tortugal = summary(tortugal.acomp)[[2]] %>% log()
+
+var.array.tortugal[lower.tri(var.array.tortugal)] = -mean.matrix.tortugal[lower.tri(mean.matrix.tortugal)]
+
+diag(var.array.tortugal) = NA
+
+tortugal.clr.diag = tortugal.acomp$clr %>% var() %>% diag()
+
+var.array.tortugal %>% 
+  as.data.frame() %>% 
+  bind_rows(tortugal.centro,tortugal.clr.diag) %>%
+  rownames_to_column(" ") %>% 
+  mutate(" " = c(names(tortugal.acomp),'Centro','Varianza')) %>% 
+  flextable() %>% 
+  theme_booktabs() %>% 
+  colformat_double(digits = 2) %>% 
+  hline(i = 10,part = 'body', 
+        border = officer::fp_border(color="black",width = 2)) %>% 
+  mk_par(j = 2, part = "header",
+         value = as_paragraph(as_i('SiO'),as_sub('2'))) %>% 
+  mk_par(j = 3, part = "header",
+         value = as_paragraph(as_i('TiO'),as_sub('2'))) %>% 
+  mk_par(j = 4, part = "header",
+         value = as_paragraph(as_i('Al'),as_sub('2'),
+                              as_i('O'),as_sub('3'))) %>% 
+  mk_par(j = 5, part = "header", value = as_paragraph(as_i('FeOt'))) %>% 
+  mk_par(j = 6, part = "header", value = as_paragraph(as_i('CaO'))) %>% 
+  mk_par(j = 7, part = "header", value = as_paragraph(as_i('MgO'))) %>% 
+  mk_par(j = 8, part = "header",
+         value = as_paragraph(as_i('MnO'))) %>% 
+  mk_par(j = 9, part = "header",
+         value = as_paragraph(as_i('K'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 10, part = "header",
+         value = as_paragraph(as_i('Na'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 11, part = "header",
+         value = as_paragraph(as_i('P'),as_sub('2'),
+                              as_i('O'),as_sub('5'))) %>% 
+  mk_par(i = 1,j=1, value = as_paragraph(as_i('SiO'),as_sub('2'))) %>% 
+  mk_par(i = 2,j=1, value = as_paragraph(as_i('TiO'),as_sub('2'))) %>% 
+  mk_par(i = 3,j=1, value = as_paragraph(as_i('Al'),as_sub('2'),
+                                         as_i('O'),as_sub('3'))) %>% 
+  mk_par(i = 4,j=1, value = as_paragraph(as_i('FeOt'))) %>% 
+  mk_par(i = 5,j=1, value = as_paragraph(as_i('CaO'))) %>% 
+  mk_par(i = 6,j=1, value = as_paragraph(as_i('MgO'))) %>% 
+  mk_par(i = 7,j=1, value = as_paragraph(as_i('MnO'))) %>% 
+  mk_par(i = 8,j=1,value = as_paragraph(as_i('K'),as_sub('2'),
+                                        as_i('O'))) %>% 
+  mk_par(i = 9,j=1, value = as_paragraph(as_i('Na'),as_sub('2'),
+                                         as_i('O'))) %>% 
+  mk_par(i = 10,j=1, value = as_paragraph(as_i('P'),as_sub('2'),
+                                          as_i('O'),as_sub('5'))) %>% 
+  align(align = 'center', part = 'all') %>% 
+  bold(part = 'header') %>% 
+  fit_to_width(6.5) %>% 
+  # autofit() %>% 
+  set_caption('Arreglo de variación para los basaltos del Complejo de Tortugal. Triángulo superior: $var \\Big( log\\frac{x_i}{x_j} \\Big)$, triángulo inferior: $E\\Big( log\\frac{x_j}{x_i} \\Big)$. Penúltima línea corresponde con el la media composicional. Última línea representa el aporte de cada parte a la varianza total, con base en la transformación *clr*.')
+```
+
+
+```{r var-array-nicoya}
+var.array.nicoya = variation.acomp(nicoya.acomp)
+mean.matrix.nicoya = summary(nicoya.acomp)[[2]] %>% log()
+
+var.array.nicoya[lower.tri(var.array.nicoya)] = -mean.matrix.nicoya[lower.tri(mean.matrix.nicoya)]
+
+diag(var.array.nicoya) = NA
+
+nicoya.clr.diag = nicoya.acomp$clr %>% var() %>% diag()
+
+var.array.nicoya %>% 
+  as.data.frame() %>% 
+  bind_rows(nicoya.centro,nicoya.clr.diag) %>%
+  rownames_to_column(" ") %>% 
+  mutate(" " = c(names(nicoya.acomp),'Centro','Varianza')) %>% 
+  flextable() %>% 
+  theme_booktabs() %>% 
+  colformat_double(digits = 2) %>% 
+  hline(i = 10,part = 'body', 
+        border = officer::fp_border(color="black",width = 2)) %>% 
+  mk_par(j = 2, part = "header",
+         value = as_paragraph(as_i('SiO'),as_sub('2'))) %>% 
+  mk_par(j = 3, part = "header",
+         value = as_paragraph(as_i('TiO'),as_sub('2'))) %>% 
+  mk_par(j = 4, part = "header",
+         value = as_paragraph(as_i('Al'),as_sub('2'),
+                              as_i('O'),as_sub('3'))) %>% 
+  mk_par(j = 5, part = "header", value = as_paragraph(as_i('FeOt'))) %>% 
+  mk_par(j = 6, part = "header", value = as_paragraph(as_i('CaO'))) %>% 
+  mk_par(j = 7, part = "header", value = as_paragraph(as_i('MgO'))) %>% 
+  mk_par(j = 8, part = "header",
+         value = as_paragraph(as_i('MnO'))) %>% 
+  mk_par(j = 9, part = "header",
+         value = as_paragraph(as_i('K'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 10, part = "header",
+         value = as_paragraph(as_i('Na'),as_sub('2'),
+                              as_i('O'))) %>% 
+  mk_par(j = 11, part = "header",
+         value = as_paragraph(as_i('P'),as_sub('2'),
+                              as_i('O'),as_sub('5'))) %>% 
+  mk_par(i = 1,j=1, value = as_paragraph(as_i('SiO'),as_sub('2'))) %>% 
+  mk_par(i = 2,j=1, value = as_paragraph(as_i('TiO'),as_sub('2'))) %>% 
+  mk_par(i = 3,j=1, value = as_paragraph(as_i('Al'),as_sub('2'),
+                                         as_i('O'),as_sub('3'))) %>% 
+  mk_par(i = 4,j=1, value = as_paragraph(as_i('FeOt'))) %>% 
+  mk_par(i = 5,j=1, value = as_paragraph(as_i('CaO'))) %>% 
+  mk_par(i = 6,j=1, value = as_paragraph(as_i('MgO'))) %>% 
+  mk_par(i = 7,j=1, value = as_paragraph(as_i('MnO'))) %>% 
+  mk_par(i = 8,j=1,value = as_paragraph(as_i('K'),as_sub('2'),
+                                        as_i('O'))) %>% 
+  mk_par(i = 9,j=1, value = as_paragraph(as_i('Na'),as_sub('2'),
+                                         as_i('O'))) %>% 
+  mk_par(i = 10,j=1, value = as_paragraph(as_i('P'),as_sub('2'),
+                                          as_i('O'),as_sub('5'))) %>% 
+  align(align = 'center', part = 'all') %>% 
+  bold(part = 'header') %>% 
+  fit_to_width(6.5) %>% 
+  # autofit() %>% 
+  set_caption('Arreglo de variación para los basaltos del Complejo de Nicoya. Triángulo superior: $var\\Big( log\\frac{x_i}{x_j} \\Big)$, triángulo inferior: $E\\Big( log\\frac{x_j}{x_i} \\Big)$. Penúltima línea corresponde con el la media composicional. Última línea representa el aporte de cada parte a la varianza total, con base en la transformación *clr*.')
+```
+
+La media del log-cociente se da en términos $log(x_j/x_i)$ donde $x_j$ se refiere a la columna y $x_i$ se refiere a la fila, por lo que valores positivos indican que la parte en el numerador (columna) es mayor a la parte en el denominador (fila) y valores negativos lo contrario (denominador/fila > numerador/columna). Para ambos casos la columna del $SiO_2$ presenta todos valores positivos de la media del log-cociente dado que $SiO_2$ es la parte dominante de la composición y es mayor al resto. El valor medio del log-cociente $MgO/MnO$ de `r apa(var.array.tortugal['MNO','MGO'],3)`, para Tortugal, indica que el contenido de $MgO$ es en promedio superior al contenido de $MgO$, lo cual se puede corroborar al ver el Cuadro \@ref(tab:centro) o la penúltima línea del arreglo. Adicionalmente, el valor de la varianza del mismo log cociente (`r apa(var.array.tortugal['MGO','MNO'],3)`) indica una proporcionalidad intermedia entre esas partes (`r apa(exp(-sqrt(var.array.tortugal['MGO','MNO'])),3)`). El mismo log-cociente pero para Nicoya presenta resultados similares en cuanto a dirección (media: `r apa(var.array.nicoya['MNO','MGO'],3)`) pero una menor variación y mayor proporcionalidad (varianza: `r apa(var.array.nicoya['MGO','MNO'],3)`, proporcionalidad: `r apa(exp(-sqrt(var.array.nicoya['MGO','MNO'])),3)`).
+
+@filzmoser2009sotte, @filzmoser2009mg, @filzmoser2010sotte, @reimann2017sotte, @kynclova2017mg, @hron2017mg, @hron2020mg, y @hron2021r presentan opciones adicionales para la caracterización numérica de datos composicionales de una parte (univariable) o la relación entre dos partes de una composición (bivariable), siempre tomando en cuenta los principios de análisis composicional. Estos temas no se cubren en este trabajo por brevedad, pero se recomienda consultarlos; en general trabajan con variantes de la transformación *ilr* adecuadas para enfocarse en la descripción univariable o bivariable respectiva.
+
+## Bi-plot
+
+En estadística multivariable una técnica muy usada es la de Análisis de Componentes Principales (Principal Componente Analysis - PCA en inglés), donde el objetivo es reducir la dimensión de los datos explicando la mayor proporción de variación posible [@vandenboogaart2013; @greenacre2019a; @filzmoser2018; @pawlowsky-glahn2015]. La forma de representar el resultado de este tipo de análisis, tanto para PCA como para otras técnicas multivariables, fue inicialmente introducido por @gabriel1971b quien lo denominó *biplot* (Figura \@ref(fig:biplot)); donde el "bi" se refiere a que se representan las columnas (partes/componentes para datos composicionales) y filas (observaciones) de una matriz de manera simultánea, mostrando la relación entre ellas. 
+
+(ref:biplot) Diagrama general de un *biplot*, mostrando los elementos principales. Modificado de @aitchison1997taciamg.
+
+```{r biplot, out.width='75%', fig.cap='(ref:biplot)'}
+knitr::include_graphics(here('images','biplot.png'))
+```
+
+@aitchison1997taciamg y @aitchison2002jrssscas introducen el uso del *biplot* en el contexto de datos composicionales como una herramienta de análisis exploratorio, usando la transformación *clr* como la matriz de datos. Cuando se usa esta transformación  para la creación del *biplot* se le conoce comúnmente como *biplot composicional* [@filzmoser2018]. @aitchison1997taciamg junto con @pawlowsky-glahn2015 resumen los elementos del *biplot* de la siguiente manera:
+
+- un *origen O* que corresponde con el centro de la composición,
+- un *vértice* en la posición $\textbf{b}_j$ para cada una de las variables *clr*,
+- un *caso* en la posición $\textbf{a}_i$ para cada una de las observaciones,
+- un *rayo* que representa la unión $\overline{O\textbf{b}_j}$, entre *O* y $\textbf{b}_j$,
+- un *enlace* que representa la unión de los vértices $\overline{\textbf{b}_j\textbf{b}_k}$, entre $\textbf{b}_j$ y $\textbf{b}_k$.
+
+La guía para interpretar el *biplot composicional* son las siguientes [@aitchison1997taciamg; @vandenboogaart2013; @pawlowsky-glahn2015]:
+
+- el *origen/centro O* como variable representa la media geométrica usada en la transformación *clr*, y como punto de referencia es el centro de la composición $\hat{g}$ (conforme \@ref(eq:centro)),
+- el *enlace* entre vértices representa la varianza del log-cociente entre las partes:
+  - un enlace corto representa partes proporcionales con un log-cociente aproximadamente constante (valor pequeño en la matriz de variación), y las flechas están casi juntas,
+  - un enlace grande representa partes no proporcionales con un log-cociente grande (valor grande en la matriz de variación), y las flechas están muy separadas,
+  - enlaces perpendiculares indican baja correlación entre los log-cocientes de las partes,
+- el *rayo* entre el origen y el vértice representa la varianza del log-cociente entre la parte y la media geométrica, a mayor longitud mayor la varianza,
+- el coseno del ángulo entre enlaces es un proxy de la correlación entre dos log-cocientes:
+  - dos rayos ortogonales ($\sim 90^\circ$) representan log-cocientes con baja o nula correlación,
+  - rayos en la misma dirección ($\sim 0^\circ$) o en direcciones opuestas ($\sim 180^\circ$) representan log-cocientes directa e inversamente correlacionados, respectivamente, y una subcomposición de estas partes mostraría un patrón unidimensional (alineados),
+  - rayos de partes que se encuentran separadas entre si ($\sim 120^\circ$) van a mostrar dispersión en un diagrama ternario.
+
+(ref:tortugal-biplot) *Biplot composicional* para óxidos mayores de basaltos del Complejo de Tortugal, construido a partir de las coordenadas *clr*.
+
+```{r tortugal-biplot, fig.cap='(ref:tortugal-biplot)'}
+tortugal.pcx.acomp = princomp(tortugal.acomp)
+
+tort.var.exp = sum(tortugal.pcx.acomp$sdev[1:2]^2)/mvar(tortugal.acomp)
+#
+# tort.casos = rep("+",times=nrow(tortugal.acomp))
+#
+# biplot(tortugal.pcx, xlabs=tort.casos)
+
+tortugal.clr = clr(tortugal.acomp) %>% as_tibble()
+
+tortugal.pcx = princomp(tortugal.clr)
+
+tortugal.biplot = tortugal.pcx %>% 
+  fviz_pca_biplot(label = 'var',
+                  title = 'Biplot composicional - Tortugal',
+                  alpha.ind=.5, repel = T) + 
+  scale_y_reverse()
+tortugal.biplot
+```
+
+(ref:nicoya-biplot) *Biplot composicional* para óxidos mayores de basaltos del Complejo de Nicoya, construido a partir de las coordenadas *clr*.
+
+```{r nicoya-biplot, fig.cap='(ref:nicoya-biplot)'}
+nicoya.pcx.acomp = princomp(nicoya.acomp)
+
+nicoya.var.exp = sum(nicoya.pcx.acomp$sdev[1:2]^2)/mvar(nicoya.acomp)
+# 
+# nicoya.casos = rep("+",times=nrow(nicoya.acomp))
+# 
+# biplot(nicoya.pcx, xlabs=nicoya.casos)
+
+nicoya.clr = clr(nicoya.acomp) %>% as_tibble()
+
+nicoya.pcx = princomp(nicoya.clr)
+
+nicoya.biplot = nicoya.pcx %>% 
+  fviz_pca_biplot(label = 'var',
+                  title = 'Biplot composicional - Nicoya',
+                  alpha.ind=.5, repel = T) + 
+  scale_y_reverse()
+nicoya.biplot
+```
+
+En las Figuras \@ref(fig:tortugal-biplot) y \@ref(fig:nicoya-biplot) se presentan los *biplots composicionales* para los basaltos del Complejo de Tortugal y Complejo de Nicoya, respectivamente. En ambos casos las dos dimensiones explican gran porción de la variación de la composición: `r apa(tort.var.exp*100,2)`% para Tortugal, y `r apa(nicoya.var.exp*100,2)`% para Nicoya, donde la contribución de cada dimensión se puede apreciar en la respectiva figura. 
+
+Para Tortugal se observan dos agrupaciones $A = [MnO, FeOt, MgO, SiO_2]$, y $B = [CaO, Al_2O_3, Na_2O, TiO_2, K_2O, P_2O_5]$, donde $A$ y $B$ son inversamente proporcionales. Para Nicoya se observan tres agrupaciones y una parte por si sola $A' = [MnO, FeOt, Na_2O]$, $B' = [P_2O_5, TiO_2]$, $C' = [MgO, CaO, Al_2O_3, SiO_2]$, y $K_2O$. Las agrupaciones se hacen con respecto a la longitud y dirección en que apuntan los rayos, y/o los enlaces cortos entre las partes.
+
+Para ambos complejos se puede observar como las relaciones mostradas en el *biplot composicional* se podrían inferir a partir de las matrices de variación (\@ref(tab:var-matrix-complejos) y/o proporcionalidad (\@ref(tab:proporcionalidad-complejos)), donde los log-cocientes de las partes para cada agrupación presentan baja variabilidad (alta proporcionalidad) y viceversa con los log-cocientes de las partes de los otros grupos. En general, los dos complejos muestran comportamientos diferentes.
+
+El *biplot composicional* es una herramienta exploratoria, para ahondar más en las relaciones y obtener conclusiones más robustas es recomendado graficar diagramas ternarios y gráficos de dispersión entre log-cocientes [@vandenboogaart2013]. Estos *biplots* se pueden usar como guía para la construcción de balances para la transformación *ilr*.
+
+```{r balances-basaltos, include=FALSE}
+basaltos.balances = matrix(c(1,0,-1,0,0,0,0,0,0,0,
+                             0,1,0,0,0,0,0,0,0,-1,
+                             1,-1,1,0,0,0,0,0,0,-1,
+                             0,0,0,0,1,0,0,0,-1,0,
+                             0,0,0,0,1,0,0,-1,1,0,
+                             0,0,0,0,0,-1,1,0,0,0,
+                             0,0,0,-1,0,1,1,0,0,0,
+                             0,0,0,1,-1,1,1,-1,-1,0,
+                             1,1,1,-1,-1,-1,-1,-1,-1,1),
+                           nrow = 9,
+                           byrow = T,
+                           dimnames = list(Balances=str_c('b',1:9),
+                                           Partes=names(nicoya2))) %>% 
+    t()
+
+basaltos.bal.basis = gsi.buildilrBase(basaltos.balances)
+
+tortugal.ilr = ilr(tortugal.acomp, V = basaltos.bal.basis)
+nicoya.ilr = ilr(nicoya.acomp, V = basaltos.bal.basis)
+
+# tortugal.ilr %>%
+#   corrr::correlate() %>%
+#   corrr::shave(upper = F) %>%
+#   corrr::fashion()
+
+# nicoya.ilr %>%
+#   corrr::correlate() %>%
+#   corrr::shave(upper = F) %>%
+#   corrr::fashion()
+
+# correlation::correlation(aar.ilr %>% as_tibble())
+
+# CoDaDendrogram(tortugal.acomp, signary = basaltos.balances,
+#                box.space = 3, col.tree = 'blue', lwd.tree = 1.5,
+#                lty.leaf = 2, border = 'blue')
+
+# CoDaDendrogram(nicoya.acomp, signary = basaltos.balances,
+#                box.space = 50, col.tree = 'red', lwd.tree = 1.5,
+#                lty.leaf = 2, border = 'red')
+```
+
+
+## Inferencial
+
+### Prueba para dos poblaciones
+
+En ocasiones se tienen observaciones de muestras que se creé pueden provenir de diferentes poblaciones. En el caso multivariable, que es la naturaleza de los datos composicionales, estas diferencias pueden deberse al centro (vector), la estructura de la covarianza (matriz), o ambos [@pawlowsky-glahn2015].
+
+En el caso de dos muestras ($X_1$, $X_2$), con tamaños $n_1$ y $n_2$, con centros $\mu_1$ y $\mu_2$ de log-cocientes, y con matrices de covarianza $\Sigma_1$ y $\Sigma_2$ de log-cocientes, se tienen las siguientes posibilidades:
+
+- $H_a: \mu_1 = \mu_2 \ \text{&} \ \Sigma_1 = \Sigma_2$
+- $H_b: \mu_1 \ne \mu_2 \ \text{&} \ \Sigma_1 = \Sigma_2$
+- $H_c: \mu_1 = \mu_2 \ \text{&} \ \Sigma_1 \ne \Sigma_2$
+- $H_g: \mu_1 \ne \mu_2 \ \text{&} \ \Sigma_1 \ne \Sigma_2$
+
+Estas hipótesis se establecen en una estructura donde se prueba una hipótesis a la vez, si se rechaza se continúa con la siguiente, y así sucesivamente hasta que no se rechace una o se rechacen todas, dando como válida la hipótesis $H_g$, que se considera como la hipótesis o modelo general [@aitchison1986; @pawlowsky-glahn2015]. 
+
+Para realizar estas pruebas se pueden usar las transformaciones *alr* [@aitchison1986] o *ilr* [@pawlowsky-glahn2015], la escogencia de la transformación no afecta los resultados pero permite abrir los datos para usar técnicas estadísticas convencionales. **Cabe resaltar y hacer explicito que las muestras (poblaciones) que se quieran comparar deben estar compuestas de las mismas partes**.
+
+A partir de los datos transformados se pueden obtener las siguientes estadísticas para realizar las pruebas [@aitchison1986], donde $x_{1r}$ y $x_{2s}$ son las muestras 1 y 2 transformadas:
+
+- Vectores de medias (centros):
+
+$$\hat{\mu}_1 = \frac{1}{n_1} \sum_{r=1}^{n_1} x_{1r}, \ \hat{\mu}_2 = \frac{1}{n_2} \sum_{s=1}^{n_2} x_{2s},$$
+
+- Matrices de covarianzas:
+
+$$\hat{\Sigma}_1 = \frac{1}{n_1} \sum_{r=1}^{n_1} (x_{1r}-\hat{\mu}_1)(x_{1r}-\hat{\mu}_1)^T,$$
+
+$$\hat{\Sigma}_2 = \frac{1}{n_2} \sum_{s=1}^{n_2} (x_{2s}-\hat{\mu}_2)(x_{2s}-\hat{\mu}_2)^T,$$
+
+- Matriz de covarianza agrupada:
+
+$$\hat{\Sigma}_p = \frac{n_1 \hat{\Sigma}_1 + n_2 \hat{\Sigma}_2}{n_1 + n_2},$$
+
+- Vector de media (centros) y matriz de covarianza combinados:
+
+$$\hat{\mu}_c = \frac{n_1 \hat{\mu}_1 + n_2 \hat{\mu}_2}{n_1 + n_2},$$
+
+$$\hat{\Sigma}_c = \hat{\Sigma}_p + \frac{n_1 n_2 (\hat{\mu}_1-\hat{\mu}_2)(\hat{\mu}_1-\hat{\mu}_2)^T}{(n_1 + n_2)^2}.$$
+
+Las hipótesis se realizan usando la prueba general de la razón de probabilidad (general likelihood ratio test - en inglés), la cual genera un estadístico $Q$ que tiene una distribución aproximada a la chi-cuadrada con grados de libertad $v$ ($\chi^2(v)$); donde para cada prueba los grados de libertad van a variar [@aitchison1986; @pawlowsky-glahn2015]. Para una descripción detallada de las pruebas se pueden revisar las referencias antes citadas, especialmente @pawlowsky-glahn2015 - página 138.
+
+<!-- A continuación se describen las pruebas para las diferentes hipótesis: -->
+
+<!-- a. *Centros y covarianzas iguales*. La hipótesis nula es que $\mu_1 = \mu_2 \ \text{&} \ \Sigma_1 = \Sigma_2$, por lo que se requieren estimadores de los parámetros $\mu$ y $\Sigma$, los cuales corresponden con $\mu_c$ y $\Sigma_c$ bajo la hipótesis nula respectivamente. Esto resulta en el estadístico -->
+
+<!-- $$Q_a = n_1 log \Big( \frac{|\hat{\Sigma}_c|}{|\hat{\Sigma}_1|} \Big) + n_2 log\Big( \frac{|\hat{\Sigma}_c|}{|\hat{\Sigma}_2|} \Big) \sim \chi^2 \Big(\frac{1}{2}(D-1)(D+2) \Big).$$ -->
+
+<!-- b. *Centros diferentes y covarianzas iguales*. La hipótesis nula es que $\mu_1 \ne \mu_2 \ \text{&} \ \Sigma_1 = \Sigma_2$, por lo que se requieren estimadores del parámetro $\Sigma$, el cual corresponde con $\Sigma_p$ bajo la hipótesis nula. Esto resulta en el estadístico -->
+
+<!-- $$Q_b = n_1 log \Big( \frac{|\hat{\Sigma}_p|}{|\hat{\Sigma}_1|} \Big) + n_2 log\Big( \frac{|\hat{\Sigma}_p|}{|\hat{\Sigma}_2|} \Big) \sim \chi^2 \Big(\frac{1}{2}D(D-1) \Big).$$ -->
+
+<!-- b. *Centros iguales y covarianzas diferentes*. La hipótesis nula es que $\mu_1 = \mu_2 \ \text{&} \ \Sigma_1 \ne \Sigma_2$, por lo que se requieren estimadores de los parámetros $\Sigma_{1}$ y $\Sigma_{2}$, los cuales corresponden con $\Sigma_{1h}$ y $\Sigma_{2h}$ bajo la hipótesis nula respectivamente. Estas matrices se obtienen por medio de iteraciones al no existir una solución analítica (para más detalle consultar @aitchison1986 y @pawlowsky-glahn2015), lo que resulta en el estadístico -->
+
+<!-- $$Q_c = n_1 log \Big( \frac{|\hat{\Sigma}_{1h}|}{|\hat{\Sigma}_1|} \Big) + n_2 log\Big( \frac{|\hat{\Sigma}_{2h}|}{|\hat{\Sigma}_2|} \Big) \sim \chi^2 \Big(\frac{1}{2}(D-1) \Big).$$ -->
+
+Estas pruebas de hipótesis se encuentran implementadas en el paquete **GMisc** [@R-GMisc] de **R**, por lo que no es necesario realizar los cálculos a mano o paso por paso.
+
+Para el caso de la comparación entre los basaltos de los Complejos de Tortugal y de Nicoya, que se ha venido usando como ejemplo en el presente trabajo, se muestra el resultado en el Cuadro \@ref(tab:hipotesis2).
+
+```{r hipotesis2}
+CoDA_2Group_All(nicoya2,tortugal.MultLN) %>% 
+  flextable() %>% 
+  set_header_labels(pval = 'Valor-p') %>% 
+  theme_booktabs() %>% 
+  set_formatter(values = list("pval" = p_val_format)) %>% 
+  colformat_double(j = 'Q') %>% 
+  colformat_int(j = 'nu') %>% 
+  align(align = 'center', part = 'all') %>% 
+  bold(part = 'header') %>% 
+  # fit_to_width(6.5) %>% 
+  autofit() %>%
+  set_caption('Resultado de las pruebas de hipótesis comparando los basaltos de los Complejos de Tortugal y Nicoya. *Q* es el estadístico, *nu* son los grados de libertad, y *H0* es la hipótesis nula respectiva.')
+```
+
+Con estos resultados, y conforme lo que se observó en los arreglos de variación (Cuadros \@ref(tab:var-array-tortugal) y \@ref(tab:var-array-nicoya)) y en los *biplots composicionales* (Figuras \@ref(fig:tortugal-biplot) y \@ref(fig:nicoya-biplot)), las composiciones de estos basaltos difieren entre ambas localidades, desde el punto de vista estadístico, haciendo uso de la teoría de análisis de datos composicionales presentada en este trabajo.
+
+### Índice de atipicidad
+
+@aitchison1986 introdujo el índice de atipicidad (atypicality index - en inglés) para identificar posibles composiciones atípicas/extremas/anómalas/diferentes con respecto a una muestra/población con parámetros $\hat{\mu}$ y $\hat{\Sigma}$. Su formulación se presenta en la Ecuación \@ref(eq:atypicality).
+
+\begin{equation}
+  P[F_{D-1,N-(D-1)} \leq k(x^*-\hat{\mu})^T \ \hat{\Sigma}^{-1} \ (x^*-\hat{\mu})] 
+  (\#eq:atypicality)
+\end{equation}
+
+donde $k=\frac{N(N-(D-1))}{(n^2-1)(D-1)}$, $N$ es el total de composiciones/observaciones que forman la muestra con que se desea comparar, y $x^*$ puede ser cada composición/observación de la muestra o una composición ajena a la muestra.
+
+Este índice tiene un rango de 0 a 1, donde valores cercanos a 0 corresponden con composiciones cercanas al centro de la muestra y valores cercanos a 1 corresponden con composiciones atípicas y lejanas al centro de los datos. Queda a criterio del analista qué valor usar como corte para determinar qué composición es atípica o no, pero por lo general se ha usado el corte de 0,95, por lo que composiciones con índices de atipicidad mayor o igual a 0,95 se consideran atípicas al resto de las que componen la muestra. El índice se puede usar para cada composición dentro de una muestra o para comparar una composición ajena contra una muestra (población) específica y determinar si se pudieran considerar similares [@aitchison1986]. **De manera similar a las hipótesis de dos poblaciones se ocupa que la composición y la muestra se compongan de las mismas partes**.
+
+```{r atipicidad}
+tortugal.atyp = CoDA_Atyp_Idx(tortugal.acomp) %>% 
+  as.data.frame() %>% 
+  rename(AtypIdx = V1) %>% 
+  mutate(Clase = if_else(AtypIdx > 0.949,'Atípica','Típica'))
+
+nicoya.atyp = CoDA_Atyp_Idx(nicoya.acomp) %>% 
+  as.data.frame() %>% 
+  rename(AtypIdx = V1) %>% 
+  mutate(Clase = if_else(AtypIdx > 0.949,'Atípica','Típica'))
+
+complejos.atyp = bind_rows(list(Tortugal=tortugal.atyp,
+                                Nicoya=nicoya.atyp),
+                           .id = 'Complejo')
+```
+
+El Cuadro \@ref(tab:atipicidad-resumen) muestra un resumen después de aplicar el índice de atipicidad a ambos complejos. En general y conforme los datos que se tiene, entre un 14% y 20% de las composiciones se podrían considerar como atípicas. El paquete **GMisc** presenta una función para el cálculo de dicho índice.
+
+```{r atipicidad-resumen}
+# complejos.atyp %>% 
+#   count(Complejo,Clase) %>% 
+#   group_by(Complejo) %>% 
+#   mutate(prop = n/sum(n) %>% round(2)) %>% 
+#   flextable() %>% 
+#   set_header_labels(prop = 'Proporción') %>% 
+#   theme_booktabs() %>% 
+#   colformat_double(j = 'prop', digits = 2) %>% 
+#   colformat_int(j = 'n') %>% 
+#   align(align = 'center', part = 'all') %>% 
+#   bold(part = 'header') %>% 
+#   fit_to_width(6.5) %>%
+#   # autofit() %>%
+#   set_caption('Índices de atipicidad para los basaltos de los Complejos de Tortugal y Nicoya, mostrando la clasificación usando un corte de 0,95, y la cantidad de composiciones y proporción para cada clase por complejo.')
+
+complejos.atyp %>% 
+  tbl_cross(Clase, Complejo, percent = 'column',margin = NULL) %>%
+  modify_header(label ~ '') %>% 
+  as_flex_table() %>% 
+  bold(part = 'header',i = 1) %>% 
+  fit_to_width(6.5) %>%
+  # autofit() %>%
+  set_caption('Índices de atipicidad para los basaltos de los Complejos de Tortugal y de Nicoya, mostrando la clasificación usando un corte de 0,95, y la cantidad de composiciones y porcentaje para cada clase por complejo.')
+```
+
+Como se mencionó el índice de atipicidad se puede usar para determinar si una composición puede provenir de una muestra (población). Para ejemplificar esto se va a comparar la composición 5 de Tortugal (`r tortugal2 %>% slice(5) %>% simplify() %>% str_c(names(tortugal2),.,sep = ': ', collapse = '; ')`) a ver qué tan atípica se puede considerar con respecto a la muestra (población) de basaltos del Complejo de Nicoya. El valor del índice de atipicidad para este caso es de `r apa(CoDA_Atyp_Idx(nicoya.acomp,tortugal.acomp[5,])[1,1],3)`, el cual resulta en un valor muy cercano a 1, por lo que esta composición (basalto) de Tortugal se puede considerar como atípica (muy diferente) con respecto a la población de basaltos del Complejo de Nicoya.
+
+
+# Conclusiones
+
+Los datos composicionales son un tipo de dato especial por su naturaleza, donde por lo general el interés está en la información relativa de las partes y se presentan de una forma que la suma de las partes cierra a un valor constante (1, 100%, etc.). Este tipo de datos son comunes en geociencias, por lo que entender su naturaleza y conocer cómo tratarlos estadísticamente de manera apropiada es de vital importancia para obtener conclusiones adecuadas.
+
+El análisis de datos composicionales es relativamente nuevo (inicios de los años 1980), su difusión y aceptación ha sido lenta, pero se ha venido dando con mayor fuerza en los últimos años, al ver la necesidad y entender que este tipo de datos son diferentes y ocupan un tratamiento especial.
+
+Este trabajo presenta una introducción a este tipo de análisis, presentando los principios y conceptos fundamentales, así como las técnicas básicas apropiadas para describir y trabajar con estos datos. Hay muchas más técnicas disponibles (regresiones, análisis de discriminación, análisis de agrupamientos, etc.) para aplicar a datos composicionales que por brevedad no se presentan acá pero se pueden consultar en las referencias mencionadas. La idea del trabajo es brindar una base para que el lector se familiarice con este tema y busque cómo aplicarlo para sus necesidades específicas.
+
+Como ejemplo se usan datos de basaltos de los Complejos de Tortugal y Nicoya, describiéndolos y comparándolos usando las técnicas aquí presentadas. Estos análisis muestran diferencias en sus características (composición y relaciones), y se formalizan con las pruebas estadísticas respectivas, indicando en que los complejos difieren tanto en su centro como en su estructura de covarianza.
+
+El código en **R** usado durante este trabajo se encuentra disponible en el repositorio de GitHub: https://github.com/maxgav13/intro_coda, para su consulta y uso.
+
+# Referencias
+
+```{r write-packages, include = FALSE}
+if (!file.exists("bib/packages.bib")) file.create("bib/packages.bib")
+if (!file.exists("bib/knit.bib")) file.create("bib/knit.bib")
+suppressWarnings(
+  knitr::write_bib(c("rmarkdown", "bookdown"), "bib/knit.bib")
+)
+suppressWarnings(
+  knitr::write_bib(c(.packages()), "bib/packages.bib")
+)
+```
+
+```{r write-bib, eval=TRUE, include=FALSE}
+allref = c(readLines('bib/coda.bib'),
+           '\n',
+           readLines('bib/knit.bib'),
+           '\n',
+           readLines('bib/packages.bib') %>% 
+             str_replace('Manual','software') %>% 
+             str_replace('note','version') %>% 
+             str_replace('R package version','paquete de R'))
+writeLines(allref,'bib/all.bib')
+```
